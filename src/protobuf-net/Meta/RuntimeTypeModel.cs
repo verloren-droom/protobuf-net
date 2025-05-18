@@ -212,7 +212,7 @@ namespace ProtoBuf.Meta
             var imports = new HashSet<string>(StringComparer.Ordinal);
             MetaType AddType(Type type, bool forceOutput, bool inferPackageAndOrigin)
             {
-                if (forceOutput && type is not null) (forceGenerationTypes ??= []).Add(type);
+                if (forceOutput && type is not null) (forceGenerationTypes ??= new HashSet<Type>()).Add(type);
                 // generate just relative to the supplied type
                 int index = FindOrAddAuto(type, false, false, false, DefaultCompatibilityLevel);
                 if (index < 0) throw new ArgumentException($"The type specified is not a contract-type: '{type.NormalizeName()}'", nameof(type));
@@ -269,7 +269,7 @@ namespace ProtoBuf.Meta
                         var isInbuiltType = (ValueMember.TryGetCoreSerializer(this, DataFormat.Default, DefaultCompatibilityLevel, effectiveType, out var _, false, false, false, false) is object);
                         if (isInbuiltType)
                         {
-                            (inbuiltTypes ??= []).Add(effectiveType);
+                            (inbuiltTypes ??= new List<Type>()).Add(effectiveType);
                         }
                         else
                         {
@@ -573,7 +573,7 @@ namespace ProtoBuf.Meta
         {
             try
             {
-                var dm = new DynamicMethod("CheckCompilerAvailable", typeof(bool), [typeof(int)]);
+                var dm = new DynamicMethod("CheckCompilerAvailable", typeof(bool), new Type[] { typeof(int) });
                 var il = dm.GetILGenerator();
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Ldc_I4, 42);
@@ -639,38 +639,38 @@ namespace ProtoBuf.Meta
             }
         }
 
-        private readonly BasicList types = [], basicTypes = [];
-
+        private readonly BasicList types = new BasicList(), basicTypes = new BasicList();
+        
         private sealed class BasicType
         {
             public Type Type { get; }
-
+        
             public IRuntimeProtoSerializerNode Serializer { get; }
-
+        
             public BasicType(Type type, IRuntimeProtoSerializerNode serializer)
             {
                 Type = type;
                 Serializer = serializer;
             }
         }
-
+        
         internal IRuntimeProtoSerializerNode TryGetBasicTypeSerializer(Type type)
         {
             int idx = basicTypes.IndexOf(BasicTypeFinder, type);
-
+        
             if (idx >= 0) return ((BasicType)basicTypes[idx]).Serializer;
-
+        
             lock (basicTypes)
             { // don't need a full model lock for this
                 // double-checked
                 idx = basicTypes.IndexOf(BasicTypeFinder, type);
                 if (idx >= 0) return ((BasicType)basicTypes[idx]).Serializer;
-
+        
                 MetaType.AttributeFamily family = MetaType.GetContractFamily(this, type, null);
                 IRuntimeProtoSerializerNode ser = family == MetaType.AttributeFamily.None
                     ? ValueMember.TryGetCoreSerializer(this, DataFormat.Default, CompatibilityLevel.NotSpecified, type, out _, false, false, false, false)
                     : null;
-
+        
                 if (ser is object) basicTypes.Add(new BasicType(type, ser));
                 return ser;
             }
@@ -975,7 +975,7 @@ namespace ProtoBuf.Meta
             => (_serviceCache[typeof(T)] ?? GetServicesSlow(typeof(T), ambient));
 
 
-        private readonly Hashtable _serviceCache = [];
+        private readonly Hashtable _serviceCache = new Hashtable();
         internal void ResetServiceCache(Type type)
         {
             if (type is not null)
@@ -1366,19 +1366,17 @@ namespace ProtoBuf.Meta
             }
 
             AssemblyName an = new AssemblyName { Name = assemblyName, Version = options.AssemblyVersion };
-#if PLAT_NO_EMITDLL
-            AssemblyBuilder asm = AssemblyBuilder.DefineDynamicAssembly(an,
-                AssemblyBuilderAccess.RunAndCollect);
-            ModuleBuilder module = asm.DefineDynamicModule(moduleName);
-#else
+#if NETFRAMEWORK
             AssemblyBuilder asm = AppDomain.CurrentDomain.DefineDynamicAssembly(an,
-                save ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.RunAndCollect);
+                save ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.Run);
             ModuleBuilder module = save ? asm.DefineDynamicModule(moduleName, path)
                                         : asm.DefineDynamicModule(moduleName);
+#else
+            AssemblyBuilder asm = AssemblyBuilder.DefineDynamicAssembly(an, AssemblyBuilderAccess.Run);
+            ModuleBuilder module = asm.DefineDynamicModule(moduleName);
 #endif
             var scope = CompilerContextScope.CreateForModule(this, module, true, assemblyName);
             WriteAssemblyAttributes(options, assemblyName, asm);
-
 
             var serviceType = WriteBasicTypeModel("___PBN_Services___" + typeName, module, typeof(object), true);
             // note: the service could benefit from [DynamicallyAccessedMembers(DynamicAccess.Serializer)], but: that only exists
@@ -1397,6 +1395,7 @@ namespace ProtoBuf.Meta
 
             WriteConstructorsAndOverrides(modelType, finalServiceType);
 
+
 #if NETSTANDARD2_0
             Type finalType = modelType.CreateTypeInfo().AsType();
 #else
@@ -1407,6 +1406,7 @@ namespace ProtoBuf.Meta
 #if PLAT_NO_EMITDLL
                 throw new NotSupportedException(CompilerOptions.NoPersistence);
 #else
+#if NETFRAMEWORK
                 try
                 {
                     asm.Save(path);
@@ -1417,6 +1417,9 @@ namespace ProtoBuf.Meta
                     throw new IOException(path + ", " + ex.Message, ex);
                 }
                 Debug.WriteLine("Wrote dll:" + path);
+#else
+                throw new NotSupportedException("Saving dynamic assemblies to disk is not supported on this platform.");
+#endif
 #endif
             }
             return (TypeModel)Activator.CreateInstance(finalType, nonPublic: true);
@@ -1678,21 +1681,24 @@ namespace ProtoBuf.Meta
                 {
                     PropertyInfo[] props;
                     object[] propValues;
+
                     if (string.IsNullOrEmpty(options.TargetFrameworkDisplayName))
                     {
-                        props = [];
-                        propValues = [];
+                        props = Array.Empty<PropertyInfo>();
+                        propValues = Array.Empty<object>();
                     }
                     else
                     {
-                        props = [versionAttribType.GetProperty("FrameworkDisplayName")];
-                        propValues = [options.TargetFrameworkDisplayName];
+                        props = new[] { versionAttribType.GetProperty("FrameworkDisplayName") };
+                        propValues = new[] { options.TargetFrameworkDisplayName };
                     }
-                    CustomAttributeBuilder builder = new CustomAttributeBuilder(
-                        versionAttribType.GetConstructor([typeof(string)]),
-                        [options.TargetFrameworkName],
+
+                    var builder = new CustomAttributeBuilder(
+                        versionAttribType.GetConstructor(new[] { typeof(string) }),
+                        new[] { options.TargetFrameworkName },
                         props,
                         propValues);
+
                     asm.SetCustomAttribute(builder);
                 }
             }
@@ -1708,29 +1714,33 @@ namespace ProtoBuf.Meta
 
             if (internalsVisibleToAttribType is not null)
             {
-                List<string> internalAssemblies = [];
-                List<Assembly> consideredAssemblies = [];
+                var internalAssemblies = new List<string>();
+                var consideredAssemblies = new List<Assembly>();
                 foreach (MetaType metaType in types)
                 {
                     Assembly assembly = metaType.Type.Assembly;
-                    if (consideredAssemblies.IndexOf(assembly) >= 0) continue;
+                    if (consideredAssemblies.Contains(assembly)) continue;
                     consideredAssemblies.Add(assembly);
 
                     AttributeMap[] assemblyAttribsMap = AttributeMap.Create(assembly);
+
                     for (int i = 0; i < assemblyAttribsMap.Length; i++)
                     {
                         if (assemblyAttribsMap[i].AttributeType != internalsVisibleToAttribType) continue;
 
                         assemblyAttribsMap[i].TryGet("AssemblyName", out var privilegedAssemblyObj);
                         string privilegedAssemblyName = privilegedAssemblyObj as string;
-                        if (privilegedAssemblyName == assemblyName || string.IsNullOrEmpty(privilegedAssemblyName)) continue; // ignore
 
-                        if (internalAssemblies.IndexOf(privilegedAssemblyName) >= 0) continue; // seen it before
+                        if (privilegedAssemblyName == assemblyName || string.IsNullOrEmpty(privilegedAssemblyName)) continue;
+
+                        if (internalAssemblies.Contains(privilegedAssemblyName)) continue;
+
                         internalAssemblies.Add(privilegedAssemblyName);
 
-                        CustomAttributeBuilder builder = new CustomAttributeBuilder(
-                            internalsVisibleToAttribType.GetConstructor([typeof(string)]),
-                            [privilegedAssemblyName]);
+                        var builder = new CustomAttributeBuilder(
+                            internalsVisibleToAttribType.GetConstructor(new[] { typeof(string) }),
+                            new[] { privilegedAssemblyName });
+
                         asm.SetCustomAttribute(builder);
                     }
                 }
@@ -1755,13 +1765,14 @@ namespace ProtoBuf.Meta
                 static void WriteAssemblyInfoAttribute<TAttribute>(CompilerOptions options, AssemblyBuilder asm, string value)
                     where TAttribute : Attribute
                 {
-                    if (string.IsNullOrEmpty(value))
-                        return;
+                    if (string.IsNullOrEmpty(value)) return;
 
                     var attributeType = typeof(TAttribute);
-                    Type[] ctorParameters = [typeof(string)];
-                    var ctor = attributeType.GetConstructor(ctorParameters);
-                    var attribute = new CustomAttributeBuilder(ctor, [value]);
+                    var ctor = attributeType.GetConstructor(new[] { typeof(string) });
+
+                    if (ctor == null) return;
+
+                    var attribute = new CustomAttributeBuilder(ctor, new[] { value });
                     asm.SetCustomAttribute(attribute);
                 }
             }
@@ -2272,7 +2283,7 @@ namespace ProtoBuf.Meta
 
             lock (_serviceCache)
             {
-                _externalProviders ??= [];
+                _externalProviders ??= new Hashtable();
             }
             if (!_externalProviders.ContainsKey(collection))
                 RepeatedSerializers.Add(collection, (root, current, targs) => RepeatedSerializers.Resolve(serializerType, "Create", targs),true,_externalProviders);

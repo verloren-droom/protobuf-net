@@ -42,6 +42,6 @@ using System.Runtime.CompilerServices;
 namespace System.Runtime.CompilerServices
 {
     [AttributeUsage(AttributeTargets.Module, Inherited = false)]
-    internal sealed class SkipLocalsInitAttribute : Attribute;
+    internal sealed class SkipLocalsInitAttribute : Attribute {}
 }
 #endif
